@@ -504,7 +504,7 @@ function render(t) {
 
   // Phase 0: Title (0–5s) — heavy overlay, video barely visible
   if (t < 5) {
-    const overlayDark = lerp(0.5, 0.1, clamp(t / 5, 0, 1));
+    const overlayDark = lerp(0.82, 0.7, clamp(t / 5, 0, 1));
     drawVideoOverlay(overlayDark);
     const fadeIn = easeOut(clamp(t / 1.5, 0, 1));
     const fadeOut = t > 3.5 ? clamp((5 - t) / 1.5, 0, 1) : 1;
@@ -514,9 +514,9 @@ function render(t) {
 
   // Phase 1+: Chart visible — video shows through with moderate overlay
   // Overlay gets lighter as we progress to let more video emotion through
-  const baseOverlay = t < 9 ? lerp(0.1, 0.1, clamp((t - 5) / 4, 0, 1)) :
-                      t < 46 ? 0.1 :
-                      0.1;
+  const baseOverlay = t < 9 ? lerp(0.7, 0.5, clamp((t - 5) / 4, 0, 1)) :
+                      t < 46 ? 0.5 :
+                      0.5;
   drawVideoOverlay(baseOverlay);
 
   // Chart backdrop (frosted panel)

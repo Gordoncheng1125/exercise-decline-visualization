@@ -67,7 +67,6 @@ window.addEventListener('resize', fitCanvas);
 const COL = {
   sedentary: '#ff4d6a',
   active: '#4dffb8',
-  threshold: '#ff9f1c',
   grid: 'rgba(255,255,255,0.08)',
   textDim: 'rgba(255,255,255,0.5)',
   textMid: 'rgba(255,255,255,0.75)',
@@ -76,56 +75,67 @@ const COL = {
 };
 
 // ─── DATA MODEL ───
-const AGE_START = 25;
+const AGE_START = 50;
 const AGE_END = 90;
-const VO2_PEAK = 45;
-const THRESHOLD = 18;
+
+// Separate starting VO2max at age 50
+const VO2_SED_START = 33;
+const VO2_ACT_START = 40;
+
+// Multi-layer functional thresholds
+const THRESHOLDS = [
+  { vo2: 25, label: "Can't jog to catch a bus",           color: '#ffd93d', textColor: 'rgba(255,217,61,0.7)' },
+  { vo2: 22, label: "Can't climb 2 flights of stairs",    color: '#ff9f1c', textColor: 'rgba(255,159,28,0.7)' },
+  { vo2: 20, label: "Can't carry groceries a block",      color: '#ff6b35', textColor: 'rgba(255,107,53,0.7)' },
+  { vo2: 18, label: "Can't get up from a chair unassisted", color: '#ff3333', textColor: 'rgba(255,51,51,0.7)' },
+];
 
 function vo2Sedentary(age) {
-  if (age <= 25) return VO2_PEAK;
-  if (age <= 50) return VO2_PEAK * Math.pow(0.88, (age - 25) / 10);
-  const v50 = VO2_PEAK * Math.pow(0.88, 2.5);
-  return v50 * Math.pow(0.84, (age - 50) / 10);
+  if (age <= 50) return VO2_SED_START;
+  return VO2_SED_START * Math.pow(0.82, (age - 50) / 10);
 }
 
 function vo2Active(age) {
-  if (age <= 25) return VO2_PEAK;
-  if (age <= 50) return VO2_PEAK * Math.pow(0.945, (age - 25) / 10);
-  const v50 = VO2_PEAK * Math.pow(0.945, 2.5);
-  return v50 * Math.pow(0.92, (age - 50) / 10);
+  if (age <= 50) return VO2_ACT_START;
+  return VO2_ACT_START * Math.pow(0.92, (age - 50) / 10);
 }
 
-function findThresholdAge(fn) {
-  for (let a = 25; a <= 95; a += 0.1) {
-    if (fn(a) <= THRESHOLD) return a;
+// Find the age at which a curve crosses a threshold
+function findCrossingAge(fn, threshold) {
+  for (let a = 50; a <= 95; a += 0.1) {
+    if (fn(a) <= threshold) return a;
   }
-  return 95;
+  return null; // never crosses
 }
-const sedThresholdAge = findThresholdAge(vo2Sedentary);
-const actThresholdAge = findThresholdAge(vo2Active);
 
+// Pre-compute sedentary crossing ages for each threshold
+const sedCrossings = THRESHOLDS.map(th => ({
+  ...th,
+  crossAge: findCrossingAge(vo2Sedentary, th.vo2),
+}));
+
+// Muscle mass model — starts at 50
 function muscleSedentary(age) {
-  if (age <= 30) return 100;
-  if (age <= 50) return 100 - ((age - 30) / 10) * 8;
-  return 100 - 16 - ((age - 50) / 10) * 15;
+  if (age <= 50) return 100;
+  return 100 - ((age - 50) / 10) * 15;
 }
 function muscleActive(age) {
-  if (age <= 30) return 100;
-  if (age <= 50) return 100 - ((age - 30) / 10) * 4;
-  return 100 - 8 - ((age - 50) / 10) * 7;
+  if (age <= 50) return 100;
+  return 100 - ((age - 50) / 10) * 7;
 }
 
 // ─── TIMELINE ───
 // Total: ~60s to sync with video (~61s)
-// Phase 0: Title card — video plays behind with heavy overlay (0–5s)
-// Phase 1: Chart framework fades in, overlay lightens (5–9s)
-// Phase 2: Curves draw age 25→50 (9–22s)
-// Phase 3: Curves 50→70, threshold appears (22–35s)
-// Phase 4: Curves 70→90, crossing moment (35–46s)
-// Phase 5: Stats cards (46–53s)
-// Phase 6: Closing message (53–60s)
+// Phase 0: Title card (0–4s)
+// Phase 1: Chart framework + threshold lines fade in (4–8s)
+// Phase 2: Curves draw age 50→65 — first threshold crossed (8–20s)
+// Phase 3: Curves draw age 65→75 — second/third thresholds (20–32s)
+// Phase 4: Curves draw age 75→90 — final threshold (32–42s)
+// Phase 5: Stats cards (42–50s)
+// Phase 6: Closing message (50–60s)
 
 const DURATION = 60;
+const VIDEO_START_OFFSET = 15; // skip first 15s of video (25–50 age content)
 let frame = 0;
 let startTime = null;
 
@@ -135,7 +145,7 @@ function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
 function easeInOut(t) { return t < 0.5 ? 2*t*t : 1-Math.pow(-2*t+2,2)/2; }
 function easeOut(t) { return 1 - Math.pow(1 - t, 3); }
 
-// Chart area — shifted right and smaller to leave room for video
+// Chart area
 const CHART = {
   left: W * 0.08,
   right: W * 0.92,
@@ -185,16 +195,13 @@ function drawText(text, x, y, opts = {}) {
 // ─── DRAW FUNCTIONS ───
 
 function drawVideoOverlay(darkness) {
-  // Semi-transparent dark overlay on top of video
   ctx.fillStyle = `rgba(5,5,12,${darkness})`;
   ctx.fillRect(0, 0, W, H);
 }
 
 function drawChartBackdrop(opacity) {
-  // Frosted dark panel behind chart area for readability
   ctx.save();
   ctx.globalAlpha = opacity;
-  const pad = 50;
   const grad = ctx.createLinearGradient(0, CHART.top - 120, 0, CHART.bottom + 90);
   grad.addColorStop(0, 'rgba(5,5,15,0.0)');
   grad.addColorStop(0.1, 'rgba(5,5,15,0.75)');
@@ -208,9 +215,9 @@ function drawChartBackdrop(opacity) {
 function drawTitle(opacity) {
   drawText('The Cost of Stillness', W/2, H/2 - 70,
     { font: 'bold 80px "Helvetica Neue", Arial', color: COL.white, alpha: opacity });
-  drawText('How small amounts of exercise reshape your biological future', W/2, H/2 + 5,
+  drawText('What happens to your body after 50 without exercise', W/2, H/2 + 5,
     { font: '30px "Helvetica Neue", Arial', color: 'rgba(255,255,255,0.7)', alpha: opacity });
-  drawText('Based on longitudinal VO₂ Max research', W/2, H/2 + 65,
+  drawText('Based on VO₂ Max research — the strongest predictor of lifespan', W/2, H/2 + 65,
     { font: '20px "Helvetica Neue", Arial', color: 'rgba(255,255,255,0.4)', alpha: opacity });
 }
 
@@ -219,12 +226,12 @@ function drawChartFrame(opacity) {
   ctx.globalAlpha = opacity;
 
   // Chart title
-  drawText('VO₂ Max Decline Over a Lifetime', W/2, CHART.top - 60,
+  drawText('VO₂ Max Decline After 50', W/2, CHART.top - 60,
     { font: 'bold 30px "Helvetica Neue", Arial', color: COL.textBright, alpha: opacity });
   drawText('Maximum oxygen uptake — the strongest predictor of cardiovascular fitness & longevity', W/2, CHART.top - 28,
     { font: '16px "Helvetica Neue", Arial', color: COL.textDim, alpha: opacity });
 
-  // Grid lines
+  // Grid lines — VO2 axis
   ctx.strokeStyle = COL.grid;
   for (let v = 0; v <= 50; v += 10) {
     const y = vo2ToY(v);
@@ -237,7 +244,8 @@ function drawChartFrame(opacity) {
       { font: '13px "Helvetica Neue", Arial', color: COL.textDim, align: 'right', alpha: opacity });
   }
 
-  for (let a = 30; a <= 90; a += 10) {
+  // Grid lines — Age axis
+  for (let a = 50; a <= 90; a += 10) {
     const x = ageToX(a);
     ctx.lineWidth = 0.5;
     ctx.beginPath();
@@ -274,6 +282,30 @@ function drawChartFrame(opacity) {
   ctx.stroke();
 
   ctx.restore();
+}
+
+function drawThresholdLines(opacity) {
+  THRESHOLDS.forEach(th => {
+    const y = vo2ToY(th.vo2);
+
+    ctx.save();
+    ctx.globalAlpha = opacity;
+    ctx.setLineDash([10, 6]);
+    ctx.strokeStyle = th.color;
+    ctx.lineWidth = 1.8;
+    ctx.shadowColor = th.color;
+    ctx.shadowBlur = 8;
+    ctx.beginPath();
+    ctx.moveTo(CHART.left, y);
+    ctx.lineTo(CHART.right, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+
+    // Right-side label
+    drawText(th.vo2 + ' — ' + th.label, CHART.right - 10, y - 10,
+      { font: '13px "Helvetica Neue", Arial', color: th.textColor, align: 'right', alpha: opacity });
+  });
 }
 
 function drawCurve(fn, color, maxAge, glow) {
@@ -328,31 +360,7 @@ function drawCurveArea(fn, color, maxAge, opacity) {
   ctx.restore();
 }
 
-function drawThresholdLine(opacity) {
-  ctx.save();
-  ctx.globalAlpha = opacity;
-  const y = vo2ToY(THRESHOLD);
-
-  ctx.setLineDash([14, 7]);
-  ctx.strokeStyle = COL.threshold;
-  ctx.lineWidth = 2.5;
-  ctx.shadowColor = COL.threshold;
-  ctx.shadowBlur = 12;
-  ctx.beginPath();
-  ctx.moveTo(CHART.left, y);
-  ctx.lineTo(CHART.right, y);
-  ctx.stroke();
-  ctx.setLineDash([]);
-  ctx.restore();
-
-  drawText('⚠  INDEPENDENCE THRESHOLD — 18 ml/kg/min', CHART.left + 15, y - 14,
-    { font: 'bold 16px "Helvetica Neue", Arial', color: COL.threshold, align: 'left', alpha: opacity });
-  drawText('Below: unable to climb stairs, carry groceries, or get up from a chair unassisted', CHART.left + 15, y + 24,
-    { font: '13px "Helvetica Neue", Arial', color: 'rgba(255,159,28,0.65)', align: 'left', alpha: opacity });
-}
-
 function drawAgeCounter(age, opacity) {
-  // Large age counter top-right
   drawText('AGE', W - 120, CHART.top - 50,
     { font: '16px "Helvetica Neue", Arial', color: COL.textDim, alpha: opacity });
   drawText(Math.floor(age) + '', W - 120, CHART.top + 5,
@@ -383,35 +391,56 @@ function drawLegend(opacity) {
   ctx.restore();
 }
 
-function drawThresholdCrossing(age, color, label, yOffset, opacity) {
-  const x = ageToX(age);
-  const y = vo2ToY(THRESHOLD);
+// Visual event when sedentary curve hits a threshold
+function drawThresholdCrossingEvent(crossing, currentAge, opacity) {
+  if (!crossing.crossAge || currentAge < crossing.crossAge) return;
+
+  const x = ageToX(crossing.crossAge);
+  const y = vo2ToY(crossing.vo2);
+  const fade = easeOut(clamp((currentAge - crossing.crossAge) / 2, 0, 1));
+  const combinedAlpha = fade * opacity;
 
   ctx.save();
-  ctx.globalAlpha = opacity;
+  ctx.globalAlpha = combinedAlpha;
   const pulse = 1 + 0.2 * Math.sin(frame * 0.07);
 
   // Pulsing ring
-  ctx.strokeStyle = color;
+  ctx.strokeStyle = crossing.color;
   ctx.lineWidth = 2.5;
-  ctx.shadowColor = color;
+  ctx.shadowColor = crossing.color;
   ctx.shadowBlur = 20;
   ctx.beginPath();
   ctx.arc(x, y, 12 * pulse, 0, Math.PI * 2);
   ctx.stroke();
 
   // Inner fill
-  ctx.globalAlpha = opacity * 0.4;
-  ctx.fillStyle = color;
+  ctx.globalAlpha = combinedAlpha * 0.4;
+  ctx.fillStyle = crossing.color;
   ctx.beginPath();
   ctx.arc(x, y, 8, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
 
-  drawText(label, x, y + yOffset,
-    { font: 'bold 20px "Helvetica Neue", Arial', color: color, alpha: opacity });
-  drawText('Age ' + Math.round(age), x, y + yOffset + 24,
-    { font: '15px "Helvetica Neue", Arial', color: 'rgba(255,255,255,0.7)', alpha: opacity });
+  // Label above the crossing point
+  drawText(crossing.label, x, y - 28,
+    { font: 'bold 15px "Helvetica Neue", Arial', color: crossing.color, alpha: combinedAlpha });
+  drawText('Age ' + Math.round(crossing.crossAge), x, y - 10,
+    { font: '13px "Helvetica Neue", Arial', color: 'rgba(255,255,255,0.7)', alpha: combinedAlpha });
+}
+
+// Highlight threshold label when crossed
+function drawThresholdHighlight(crossing, currentAge) {
+  if (!crossing.crossAge || currentAge < crossing.crossAge) return;
+
+  const y = vo2ToY(crossing.vo2);
+  const fade = easeOut(clamp((currentAge - crossing.crossAge) / 2, 0, 1));
+
+  // Bright flash on the threshold line text
+  const flashIntensity = Math.max(0, 1 - (currentAge - crossing.crossAge) / 4);
+  if (flashIntensity > 0) {
+    drawText(crossing.vo2 + ' — ' + crossing.label, CHART.right - 10, y - 10,
+      { font: 'bold 14px "Helvetica Neue", Arial', color: crossing.color, align: 'right', alpha: flashIntensity * 0.8 });
+  }
 }
 
 function drawMuscleBar(x, w, pct, color, label, opacity) {
@@ -435,8 +464,6 @@ function drawMuscleBar(x, w, pct, color, label, opacity) {
 function drawStats(opacity) {
   ctx.save();
   ctx.globalAlpha = opacity;
-
-  // Heavy overlay for readability
   ctx.fillStyle = `rgba(5,5,12,0.88)`;
   ctx.fillRect(0, 0, W, H);
   ctx.restore();
@@ -444,10 +471,15 @@ function drawStats(opacity) {
   drawText('The Numbers Don\'t Lie', W/2, 155,
     { font: 'bold 46px "Helvetica Neue", Arial', color: COL.textBright, alpha: opacity });
 
+  // Find when sedentary crosses the worst threshold (18)
+  const sedChairAge = sedCrossings[3].crossAge;
+  // Active never crosses any threshold — show "90+" or "Never"
+  const actNeverCrosses = findCrossingAge(vo2Active, 25); // even the mildest threshold
+
   const stats = [
-    { value: Math.round(sedThresholdAge), unit: 'years old', label: 'Sedentary loses independence', color: COL.sedentary },
-    { value: Math.round(actThresholdAge), unit: 'years old', label: 'Active loses independence', color: COL.active },
-    { value: '+' + Math.round(actThresholdAge - sedThresholdAge), unit: 'extra years', label: 'Years of independence gained', color: COL.threshold },
+    { value: Math.round(sedChairAge), unit: 'years old', label: 'Sedentary can\'t get up from a chair', color: COL.sedentary },
+    { value: '90+', unit: '', label: 'Active stays above all thresholds', color: COL.active },
+    { value: '4×', unit: 'mortality risk', label: 'Low fitness vs. high fitness', color: '#ff9f1c' },
     { value: '15–30', unit: 'min / day', label: 'Is all it takes', color: '#8b9fff' },
   ];
 
@@ -476,8 +508,10 @@ function drawStats(opacity) {
       { font: '18px "Helvetica Neue", Arial', color: COL.textMid, alpha: opacity });
   });
 
-  drawText('Source: Journal of Applied Physiology — Longitudinal Master Athletes vs Sedentary Study', W/2, H - 70,
+  drawText('Data modeled from: JAMA Network Open 2018 (122,007 adults) · ACSM/FRIEND Registry · EWGSOP2 guidelines', W/2, H - 70,
     { font: '14px "Helvetica Neue", Arial', color: COL.textDim, alpha: opacity });
+  drawText('Decline curves are illustrative models based on published rates, not raw study data.', W/2, H - 48,
+    { font: '12px "Helvetica Neue", Arial', color: 'rgba(255,255,255,0.3)', alpha: opacity });
 }
 
 function drawClosing(opacity) {
@@ -493,8 +527,8 @@ function drawClosing(opacity) {
     { font: '38px "Helvetica Neue", Arial', color: COL.textBright, alpha: opacity });
   drawText('15 minutes of walking  ·  A few flights of stairs  ·  A short stretch', W/2, H/2 + 70,
     { font: '22px "Helvetica Neue", Arial', color: COL.textDim, alpha: opacity });
-  drawText('That\'s ' + Math.round(actThresholdAge - sedThresholdAge) + ' more years of independence.', W/2, H/2 + 150,
-    { font: 'bold 30px "Helvetica Neue", Arial', color: COL.threshold, alpha: opacity });
+  drawText('The difference between dependence and independence.', W/2, H/2 + 150,
+    { font: 'bold 30px "Helvetica Neue", Arial', color: '#ff9f1c', alpha: opacity });
 }
 
 // ─── MAIN RENDER ───
@@ -502,34 +536,37 @@ function render(t) {
   // Clear canvas (transparent — lets video show through)
   ctx.clearRect(0, 0, W, H);
 
-  // Phase 0: Title (0–5s) — heavy overlay, video barely visible
-  if (t < 5) {
-    const overlayDark = lerp(0.5, 0.1, clamp(t / 5, 0, 1));
+  // Phase 0: Title (0–4s) — heavy overlay, video barely visible
+  if (t < 4) {
+    const overlayDark = lerp(0.5, 0.1, clamp(t / 4, 0, 1));
     drawVideoOverlay(overlayDark);
     const fadeIn = easeOut(clamp(t / 1.5, 0, 1));
-    const fadeOut = t > 3.5 ? clamp((5 - t) / 1.5, 0, 1) : 1;
+    const fadeOut = t > 2.5 ? clamp((4 - t) / 1.5, 0, 1) : 1;
     drawTitle(fadeIn * fadeOut);
     return;
   }
 
   // Phase 1+: Chart visible — video shows through with moderate overlay
-  // Overlay gets lighter as we progress to let more video emotion through
-  const baseOverlay = t < 9 ? lerp(0.1, 0.1, clamp((t - 5) / 4, 0, 1)) :
-                      t < 46 ? 0.1 :
-                      0.1;
-  drawVideoOverlay(baseOverlay);
+  drawVideoOverlay(0.1);
 
   // Chart backdrop (frosted panel)
-  const chartFade = easeOut(clamp((t - 5) / 2, 0, 1));
+  const chartFade = easeOut(clamp((t - 4) / 2, 0, 1));
   drawChartBackdrop(chartFade);
   drawChartFrame(chartFade);
   drawLegend(chartFade);
 
-  if (t < 9) return;
+  // Phase 1: Threshold lines fade in (4–8s)
+  if (t >= 4) {
+    const thFade = easeOut(clamp((t - 5) / 2, 0, 1));
+    drawThresholdLines(thFade * chartFade);
+  }
 
-  // Phase 2–4: Curves (9–46s)
-  const curveStartT = 9;
-  const curveEndT = 44;
+  if (t < 8) return;
+
+  // Phase 2–4: Curves (8–42s)
+  // Map time 8–42s to age 50–90 with easing
+  const curveStartT = 8;
+  const curveEndT = 42;
   const curveProgress = clamp((t - curveStartT) / (curveEndT - curveStartT), 0, 1);
   const currentAge = AGE_START + (AGE_END - AGE_START) * easeInOut(curveProgress);
 
@@ -542,43 +579,37 @@ function render(t) {
   drawCurve(vo2Active, COL.active, currentAge, 15);
 
   // Age counter
-  if (t >= 9 && t < 46) {
+  if (t >= 8 && t < 42) {
     drawAgeCounter(currentAge, 1);
   }
 
-  // Threshold line at age ~45
-  if (currentAge >= 45) {
-    drawThresholdLine(easeOut(clamp((currentAge - 45) / 5, 0, 1)));
-  }
+  // Threshold lines (keep visible during curve drawing)
+  drawThresholdLines(1);
 
-  // Threshold crossings
-  if (currentAge >= sedThresholdAge) {
-    const fade = easeOut(clamp((currentAge - sedThresholdAge) / 3, 0, 1));
-    drawThresholdCrossing(sedThresholdAge, COL.sedentary, 'Loses Independence', -38, fade);
-  }
-  if (currentAge >= actThresholdAge && actThresholdAge <= AGE_END) {
-    const fade = easeOut(clamp((currentAge - actThresholdAge) / 3, 0, 1));
-    drawThresholdCrossing(actThresholdAge, COL.active, 'Still Independent', -38, fade);
-  }
+  // Threshold crossing events
+  sedCrossings.forEach(crossing => {
+    drawThresholdCrossingEvent(crossing, currentAge, 1);
+    drawThresholdHighlight(crossing, currentAge);
+  });
 
-  // Muscle bars
-  if (currentAge > 30) {
-    const barFade = clamp((currentAge - 30) / 5, 0, 1);
+  // Muscle bars — start from age 50
+  if (currentAge > 52) {
+    const barFade = clamp((currentAge - 52) / 5, 0, 1);
     const barW = (CHART_W / 2) - 50;
     drawMuscleBar(CHART.left, barW, muscleSedentary(currentAge), COL.sedentary, 'Muscle Mass — Sedentary', barFade);
     drawMuscleBar(CHART.left + barW + 100, barW, muscleActive(currentAge), COL.active, 'Muscle Mass — Active', barFade);
   }
 
-  // Phase 5: Stats (46–53s)
-  if (t >= 46 && t < 54) {
-    const sFade = easeOut(clamp((t - 46) / 1.5, 0, 1));
-    const sOut = t > 52 ? clamp((54 - t) / 2, 0, 1) : 1;
+  // Phase 5: Stats (42–50s)
+  if (t >= 42 && t < 50) {
+    const sFade = easeOut(clamp((t - 42) / 1.5, 0, 1));
+    const sOut = t > 48 ? clamp((50 - t) / 2, 0, 1) : 1;
     drawStats(sFade * sOut);
   }
 
-  // Phase 6: Closing (54–60s)
-  if (t >= 54) {
-    drawClosing(easeOut(clamp((t - 54) / 2, 0, 1)));
+  // Phase 6: Closing (50–60s)
+  if (t >= 50) {
+    drawClosing(easeOut(clamp((t - 50) / 2, 0, 1)));
   }
 }
 
@@ -596,15 +627,17 @@ function animate(timestamp) {
   }
 }
 
-// Start: play video and begin animation simultaneously
+// Start: play video (with offset) and begin animation simultaneously
 video.addEventListener('canplay', function onReady() {
   video.removeEventListener('canplay', onReady);
+  video.currentTime = VIDEO_START_OFFSET;
   video.play();
   requestAnimationFrame(animate);
 }, { once: true });
 
 // Fallback if already loaded
 if (video.readyState >= 3) {
+  video.currentTime = VIDEO_START_OFFSET;
   video.play();
   setTimeout(() => requestAnimationFrame(animate), 100);
 }

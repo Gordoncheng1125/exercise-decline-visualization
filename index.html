@@ -158,8 +158,12 @@ const CHART_H = CHART.bottom - CHART.top;
 function ageToX(age) {
   return CHART.left + ((age - AGE_START) / (AGE_END - AGE_START)) * CHART_W;
 }
+// Y-axis visible range — zoomed in to spread out threshold lines
+const VO2_MIN = 10;
+const VO2_MAX = 45;
+
 function vo2ToY(v) {
-  return CHART.bottom - ((v) / 50) * CHART_H;
+  return CHART.bottom - ((v - VO2_MIN) / (VO2_MAX - VO2_MIN)) * CHART_H;
 }
 
 function roundRect(ctx, x, y, w, h, r) {
@@ -231,11 +235,11 @@ function drawChartFrame(opacity) {
   drawText('Maximum oxygen uptake — the strongest predictor of cardiovascular fitness & longevity', W/2, CHART.top - 28,
     { font: '16px "Helvetica Neue", Arial', color: COL.textDim, alpha: opacity });
 
-  // Grid lines — VO2 axis
+  // Grid lines — VO2 axis (only within visible range)
   ctx.strokeStyle = COL.grid;
-  for (let v = 0; v <= 50; v += 10) {
+  for (let v = 10; v <= 45; v += 5) {
     const y = vo2ToY(v);
-    ctx.lineWidth = v === 0 ? 1.5 : 0.8;
+    ctx.lineWidth = v % 10 === 0 ? 1.2 : 0.5;
     ctx.beginPath();
     ctx.moveTo(CHART.left, y);
     ctx.lineTo(CHART.right, y);
